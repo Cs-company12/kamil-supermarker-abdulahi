@@ -47,6 +47,7 @@
         .btn-blue:hover { background: #0056b3; }
         .btn-sm { padding: 4px 8px; font-size: 0.85rem; }
         .btn-secondary { background: #6c757d; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+        .btn-secondary:hover { background: #5a6268; }
         .form-control { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
         .form-select { padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
         .gap-2 { gap: 0.5rem; }
@@ -91,6 +92,9 @@
         .show-cashier { display: block !important; }
         .category-badge { font-size: 0.75rem; font-weight: bold; }
         .action-buttons { display: flex; gap: 0.25rem; }
+        .barcode-container { border: 2px solid #28a745; background: #f8fff9; }
+        .barcode-input-lg { font-size: 1.2rem; font-weight: bold; letter-spacing: 2px; }
+        
         @media (max-width: 768px) {
             .unified-section { padding: 1rem 0.75rem; }
             .nav-menu { flex-direction: column; width: 100%; margin-top: 1rem; }
@@ -101,6 +105,7 @@
             .action-buttons { flex-direction: column; gap: 0.15rem; }
             .show-admin { display: block !important; }
             .table-responsive { overflow-x: auto; }
+            .barcode-input-lg { font-size: 1rem; }
         }
     </style>
 </head>
@@ -155,8 +160,23 @@
     <h6 class="mb-3"><i class="bi bi-receipt"></i> Point of Sale</h6>
     <div class="row g-3" style="display: flex; gap: 1rem;">
         <div class="col-md-6" style="flex: 1;">
+            <!-- BARCODE SCANNER INPUT -->
+            <div class="card-modern mb-3 barcode-container">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-upc-scan fs-4 text-success"></i>
+                    <input 
+                        id="barcodeInput" 
+                        class="form-control barcode-input-lg" 
+                        placeholder="Scan barcode here..." 
+                        autocomplete="off"
+                    >
+                    <button class="btn-accent" onclick="clearBarcodeInput()">Clear</button>
+                </div>
+                <small class="text-muted">Fadlan scan barcode-ka ama geli SKU number</small>
+            </div>
+            
             <input id="searchProduct" class="form-control mb-3" placeholder="🔍 Search product by name...">
-            <div id="productList" style="max-height:420px;overflow:auto"></div>
+            <div id="productList" style="max-height:360px;overflow:auto"></div>
         </div>
         <div class="col-md-6" style="flex: 1;">
             <h6>🛒 Shopping Cart</h6>
@@ -186,6 +206,13 @@
         <div class="col-md-1"><input id="pQty" class="form-control" type="number" min="0" placeholder="Qty" required></div>
         <div class="col-md-1"><input id="pLow" class="form-control" type="number" min="0" placeholder="Low Alert" value="10" required></div>
         <div class="col-md-1"><button class="btn-accent w-100" type="submit" id="productSubmitBtn">Add</button></div>
+        <!-- default discount for product -->
+        <div class="col-md-2"><select id="pDiscType" class="form-select">
+                <option value="">No Discount</option>
+                <option value="percent">% Discount</option>
+                <option value="fixed">Fixed Discount</option>
+            </select></div>
+        <div class="col-md-2"><input id="pDiscValue" class="form-control" type="number" min="0" step="0.01" placeholder="Disc value"></div>
     </form>
     <input id="filterProd" class="form-control mb-3" placeholder="🔍 Filter products...">
     <div class="table-responsive">
@@ -196,6 +223,7 @@
                     <th>SKU</th>
                     <th>Price</th>
                     <th>Cost</th>
+                    <th>Disc</th>
                     <th>Qty</th>
                     <th>Low</th>
                     <th class="role-admin">Action</th>
@@ -225,6 +253,10 @@
             </div>
             <h4 id="repTotal">$0.00</h4>
             <div class="text-muted mb-3">Total sales in selected range</div>
+            <h4 id="repProfit">$0.00</h4>
+            <div class="text-muted mb-3">Total profit in selected range</div>
+            <h4 id="repDiscount">$0.00</h4>
+            <div class="text-muted mb-3">Total discounts given</div>
             <h6>📦 Items Sold Breakdown</h6>
             <div id="repItems" style="max-height:260px;overflow:auto"></div>
         </div>
@@ -318,7 +350,7 @@
 
 <script>
 // ============================================================================
-// KAAMIL SUPERMARKET POS SYSTEM - FINAL FIXED VERSION
+// KAAMIL SUPERMARKET POS SYSTEM - BARCODE EDITION
 // ============================================================================
 'use strict';
 
@@ -341,6 +373,71 @@ const CONFIG = {
 let currentUser = null;
 let cart = [];
 let salesChart = null;
+let barcodeBuffer = '';
+let barcodeTimer = null;
+
+// discount state for cart (applies to whole bill)
+let cartDiscount = { type: null, value: 0, amount: 0 };
+
+// helpers for discount prompts
+function askDiscountDetails(defaultType = '', defaultValue = 0) {
+    return Swal.fire({
+        title: 'Set Discount',
+        html: `
+            <select id="swalDiscType" class="swal2-input">
+                <option value="" ${defaultType === '' ? 'selected' : ''}>None</option>
+                <option value="percent" ${defaultType === 'percent' ? 'selected' : ''}>Percentage</option>
+                <option value="fixed" ${defaultType === 'fixed' ? 'selected' : ''}>Fixed Amount</option>
+            </select>
+            <input id="swalDiscValue" class="swal2-input" placeholder="Value" type="number" min="0" step="0.01" value="${defaultValue}">
+        `,
+        focusConfirm: false,
+        preConfirm: () => {
+            const type = document.getElementById('swalDiscType').value;
+            const val = parseFloat(document.getElementById('swalDiscValue').value) || 0;
+            return { type, val };
+        }
+    }).then(res => res.isConfirmed ? res.value : null);
+}
+
+// apply discount to a single cart item
+async function applyLineDiscount(itemId) {
+    const item = cart.find(i => i.id === itemId);
+    if (!item) return;
+    const res = await askDiscountDetails(item.discountType || '', item.discountValue || 0);
+    if (res && res.type) {
+        item.discountType = res.type;
+        item.discountValue = res.val;
+        const lineTotal = item.price * item.qty;
+        if (item.discountType === 'percent') {
+            item.discountAmount = lineTotal * item.discountValue / 100;
+        } else {
+            item.discountAmount = item.discountValue;
+        }
+    } else {
+        // clear discount
+        item.discountType = null;
+        item.discountValue = 0;
+        item.discountAmount = 0;
+    }
+    updateCartDisplay();
+}
+
+// apply discount to entire bill
+async function applyCartDiscount() {
+    const res = await askDiscountDetails(cartDiscount.type || '', cartDiscount.value || 0);
+    if (res && res.type) {
+        cartDiscount.type = res.type;
+        cartDiscount.value = res.val;
+        // recalc amount when rendering
+    } else {
+        cartDiscount.type = null;
+        cartDiscount.value = 0;
+        cartDiscount.amount = 0;
+    }
+    updateCartDisplay();
+}
+
 
 // ==================== SECURITY ====================
 function sanitizeInput(text, maxLength = 500) {
@@ -417,13 +514,16 @@ function showMainApp() {
     document.getElementById('userDisplay').textContent = `👤 ${currentUser.username} (${currentUser.role})`;
     setupNavigation();
     
-    // Show admin elements for admin users
     document.querySelectorAll('.role-admin').forEach(el => {
         if (currentUser.role === CONFIG.ROLES.ADMIN) {
             el.style.display = 'block';
         } else {
             el.style.display = 'none';
         }
+    });
+    // ensure any elements added later (for example when rendering tables) also honor role visibility
+    document.querySelectorAll('.role-admin').forEach(el => {
+        el.style.display = currentUser.role === CONFIG.ROLES.ADMIN ? 'block' : 'none';
     });
     
     if (currentUser.role === CONFIG.ROLES.CASHIER) {
@@ -509,13 +609,16 @@ function showView(viewName) {
     if (target) target.classList.add('active');
     if (navBtn) navBtn.classList.add('active');
     
-    // Show admin elements
     document.querySelectorAll('.role-admin').forEach(el => {
         if (currentUser.role === CONFIG.ROLES.ADMIN) {
             el.style.display = 'block';
         } else {
             el.style.display = 'none';
         }
+    });
+    // reapply role visibility after rendering dynamic content
+    document.querySelectorAll('.role-admin').forEach(el => {
+        el.style.display = currentUser.role === CONFIG.ROLES.ADMIN ? 'block' : 'none';
     });
     
     if (viewName === 'dashboard') renderDashboard();
@@ -534,7 +637,11 @@ function renderDashboard() {
         return;
     }
     
-    const sales = loadData(CONFIG.STORAGE_KEYS.SALES).filter(s => !s.returned);
+    let sales = loadData(CONFIG.STORAGE_KEYS.SALES).filter(s => !s.returned);
+    // dedupe by invoice id in case of corrupted entries
+    const salesMap = new Map();
+    sales.forEach(s => { if (!salesMap.has(s.id)) salesMap.set(s.id, s); });
+    sales = Array.from(salesMap.values());
     const products = loadData(CONFIG.STORAGE_KEYS.PRODUCTS);
     const customers = loadData(CONFIG.STORAGE_KEYS.PATIENTS);
     
@@ -546,12 +653,18 @@ function renderDashboard() {
     const weekSales = sales.filter(s => new Date(s.date) >= weekAgo).reduce((a,b) => a + b.total, 0);
     const monthSales = sales.filter(s => new Date(s.date) >= monthStart).reduce((a,b) => a + b.total, 0);
     
+    // compute profit directly from each invoice line using the cost recorded at sale time
+    // this prevents drifting if product costs are updated later and ensures consistency with reports
     const profit = sales.reduce((total, sale) => {
-        return total + sale.lines.reduce((lineProfit, line) => {
-            const prod = products.find(p => p.id === line.id);
-            if (!prod) return lineProfit;
-            return lineProfit + ((line.price - prod.cost) * line.qty);
+        let saleProfit = sale.lines.reduce((lineProfit, line) => {
+            const revenue = (line.price * line.qty) - (line.discountAmount || 0);
+            const cost = line.cost * line.qty;
+            return lineProfit + (revenue - cost);
         }, 0);
+        if (sale.discount && sale.discount.amount) {
+            saleProfit -= sale.discount.amount;
+        }
+        return total + saleProfit;
     }, 0);
     
     const totalItems = products.reduce((sum, p) => sum + p.qty, 0);
@@ -684,8 +797,21 @@ function renderPOS() {
     document.getElementById('custPhone').value = '';
     document.getElementById('custName').style.display = 'none';
     document.getElementById('custPhone').style.display = 'none';
+    
+    // Clear barcode input
+    const barcodeInput = document.getElementById('barcodeInput');
+    if (barcodeInput) {
+        barcodeInput.value = '';
+    }
+    
     cart = [];
+    cartDiscount = { type: null, value: 0, amount: 0 };
     renderProductList();
+    
+    // Initialize barcode scanner
+    setTimeout(() => {
+        processBarcodeScanner();
+    }, 100);
 }
 
 function renderProductList(search = '') {
@@ -710,7 +836,10 @@ function renderProductList(search = '') {
             <div class="d-flex justify-content-between align-items-center">
                 <div>
                     <strong>${sanitizeInput(p.name)}</strong><br>
-                    <small class="text-muted">SKU: ${sanitizeInput(p.sku || 'N/A')} | Price: ${formatMoney(p.price)} | Qty: ${p.qty}</small>
+                    <small class="text-muted">
+                        SKU: ${sanitizeInput(p.sku || 'N/A')} | Price: ${formatMoney(p.price)} | Qty: ${p.qty}
+                        ${p.discountType ? '| Disc: ' + (p.discountType === 'percent' ? p.discountValue + '%' : formatMoney(p.discountValue)) : ''}
+                    </small>
                 </div>
                 <button class="btn-accent btn-sm" onclick="addToCart('${p.id}')">Add</button>
             </div>
@@ -743,7 +872,22 @@ function addToCart(productId) {
             return;
         }
     } else {
-        cart.push({...product, qty: 1});
+        // start with default discounts if provided
+        let discType = product.discountType || null;
+        let discValue = product.discountValue || 0;
+        let discAmount = 0;
+        if (discType === 'percent') {
+            discAmount = (product.price * 1) * discValue / 100;
+        } else if (discType === 'fixed') {
+            discAmount = discValue;
+        }
+        cart.push({
+            ...product,
+            qty: 1,
+            discountType: discType,
+            discountValue: discValue,
+            discountAmount: discAmount
+        });
     }
     
     updateCartDisplay();
@@ -751,6 +895,9 @@ function addToCart(productId) {
 
 function removeFromCart(productId) {
     cart = cart.filter(item => item.id !== productId);
+    if (cart.length === 0) {
+        cartDiscount = { type: null, value: 0, amount: 0 };
+    }
     updateCartDisplay();
 }
 
@@ -760,28 +907,60 @@ function updateCartDisplay() {
         cartArea.innerHTML = '<p class="text-muted"><i class="bi bi-cart"></i> Cart is empty</p>';
         return;
     }
-    
-    const total = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
-    
+
+    // calculate line discounts and totals
+    let subtotal = 0;
+    let lineDiscountTotal = 0;
+    cart.forEach(item => {
+        const lineTotal = item.price * item.qty;
+        const disc = item.discountAmount || 0;
+        subtotal += (lineTotal - disc);
+        lineDiscountTotal += disc;
+    });
+
+    // calculate cart-level discount
+    let cartDiscountAmount = 0;
+    if (cartDiscount.type === 'percent') {
+        cartDiscountAmount = subtotal * cartDiscount.value / 100;
+    } else if (cartDiscount.type === 'fixed') {
+        cartDiscountAmount = cartDiscount.value;
+    }
+    cartDiscount.amount = cartDiscountAmount;
+
+    const total = subtotal - cartDiscountAmount;
+
     cartArea.innerHTML = `
         <table class="table table-sm">
             <thead>
                 <tr>
-                    <th>Item</th><th>Qty</th><th>Price</th><th>Total</th><th></th>
+                    <th>Item</th><th>Qty</th><th>Price</th><th>Discount</th><th>Line Total</th><th></th>
                 </tr>
             </thead>
             <tbody>
-                ${cart.map(item => `
+                ${cart.map(item => {
+                    const lineTotal = item.price * item.qty;
+                    const disc = item.discountAmount || 0;
+                    const discDisplay = disc > 0 ? '-' + formatMoney(disc) + (item.discountType === 'percent' ? ` (${item.discountValue}%)` : '') : '';
+                    const finalLine = lineTotal - disc;
+                    return `
                     <tr>
                         <td>${sanitizeInput(item.name)}</td>
                         <td>${item.qty}</td>
                         <td>${formatMoney(item.price)}</td>
-                        <td>${formatMoney(item.price * item.qty)}</td>
+                        <td>${discDisplay} <button class="btn-sm btn-secondary" onclick="applyLineDiscount('${item.id}')">✎</button></td>
+                        <td>${formatMoney(finalLine)}</td>
                         <td><button class="btn-danger btn-sm" onclick="removeFromCart('${item.id}')">×</button></td>
                     </tr>
-                `).join('')}
+                `}).join('')}
             </tbody>
         </table>
+        <div class="d-flex justify-content-end gap-2 mb-2">
+            <button class="btn-secondary btn-sm" onclick="applyCartDiscount()">Apply Bill Discount</button>
+            ${cartDiscount.type ? `<span class="text-warning align-self-center">Bill discount: ${cartDiscount.type === 'percent' ? cartDiscount.value + '%' : formatMoney(cartDiscount.value)} (${cartDiscount.amount ? '-' + formatMoney(cartDiscount.amount) : ''})</span>` : ''}
+        </div>
+        <h6 class="text-end">Subtotal: ${formatMoney(subtotal)}</h6>
+        ${lineDiscountTotal > 0 ? `<h6 class="text-end text-warning">Item Discounts: -${formatMoney(lineDiscountTotal)}</h6>` : ''}
+        ${cartDiscountAmount > 0 ? `<h6 class="text-end text-warning">Cart Discount: -${formatMoney(cartDiscountAmount)}</h6>` : ''}
         <h5 class="text-end mt-3">Total: ${formatMoney(total)}</h5>
     `;
 }
@@ -825,7 +1004,20 @@ async function processSale() {
     });
     
     const saleId = generateId('INV');
-    const total = cart.reduce((sum, item) => sum + (item.price * item.qty), 0);
+    // compute totals taking discounts into account
+    let subtotal = 0;
+    cart.forEach(item => {
+        const lineTotal = item.price * item.qty;
+        subtotal += (lineTotal - (item.discountAmount || 0));
+    });
+    let cartDiscAmount = 0;
+    if (cartDiscount.type === 'percent') {
+        cartDiscAmount = subtotal * cartDiscount.value / 100;
+    } else if (cartDiscount.type === 'fixed') {
+        cartDiscAmount = cartDiscount.value;
+    }
+    const total = subtotal - cartDiscAmount;
+
     const sale = {
         id: saleId,
         date: new Date().toISOString(),
@@ -837,8 +1029,16 @@ async function processSale() {
             name: item.name,
             qty: item.qty,
             price: item.price,
-            cost: item.cost
+            cost: item.cost,
+            discountType: item.discountType || null,
+            discountValue: item.discountValue || 0,
+            discountAmount: item.discountAmount || 0
         })),
+        discount: {
+            type: cartDiscount.type,
+            value: cartDiscount.value,
+            amount: cartDiscAmount
+        },
         returned: false
     };
     
@@ -874,15 +1074,22 @@ async function processSale() {
 
 function printReceipt(sale) {
     const printWindow = window.open('', '_blank');
-    const lines = sale.lines.map(l => `
+    const lines = sale.lines.map(l => {
+        const lineTotal = l.price * l.qty;
+        const disc = l.discountAmount || 0;
+        const discDisplay = disc > 0 ? '-' + formatMoney(disc) + (l.discountType === 'percent' ? ` (${l.discountValue}%)` : '') : '';
+        const finalLine = lineTotal - disc;
+        return `
         <tr>
             <td>${sanitizeInput(l.name)}</td>
             <td>${l.qty}</td>
             <td>${formatMoney(l.price)}</td>
-            <td>${formatMoney(l.qty * l.price)}</td>
+            <td>${discDisplay}</td>
+            <td>${formatMoney(finalLine)}</td>
         </tr>
-    `).join('');
-    
+    `;
+    }).join('');
+
     printWindow.document.write(`
         <!DOCTYPE html>
         <html>
@@ -906,20 +1113,27 @@ function printReceipt(sale) {
             <p><strong>Cashier:</strong> ${sale.user}</p>
             <table>
                 <tr style="border-bottom: 2px solid #000;">
-                    <th>Item</th><th>Qty</th><th>Price</th><th>Total</th>
+                    <th>Item</th><th>Qty</th><th>Price</th><th>Disc</th><th>Total</th>
                 </tr>
                 ${lines}
+                ${sale.discount && sale.discount.amount ? `
+                <tr>
+                    <td colspan="4"><strong>Bill Discount:</strong></td>
+                    <td>-${formatMoney(sale.discount.amount)}</td>
+                </tr>
+                ` : ''}
                 <tr style="border-top: 2px solid #000;">
-                    <td colspan="3"><strong>Total:</strong></td>
+                    <td colspan="4"><strong>Total:</strong></td>
                     <td><strong>${formatMoney(sale.total)}</strong></td>
                 </tr>
             </table>
             <p><strong>Payment:</strong> ${sale.payment}</p>
-            <p>WAA KU MAHSANTAHAY WAX IBSIGAAGA!</p>
+            <p>Mahadsanid wax iibsankeenna!</p>
             <p>Thank you for shopping with us!</p>
             <button onclick="window.print()">Print</button>
         </body>
         </html>
+        
     `);
     
     printWindow.document.close();
@@ -927,6 +1141,132 @@ function printReceipt(sale) {
         printWindow.print();
         setTimeout(() => printWindow.close(), 500);
     }, 250);
+}
+
+// ==================== BARCODE SCANNER FUNCTIONS ====================
+function processBarcodeScanner() {
+    const input = document.getElementById('barcodeInput');
+    if (!input) return;
+    
+    input.focus();
+    
+    input.addEventListener('input', function(e) {
+        if (barcodeTimer) clearTimeout(barcodeTimer);
+        
+        barcodeBuffer = e.target.value;
+        
+        barcodeTimer = setTimeout(() => {
+            if (barcodeBuffer.length > 0) {
+                handleBarcodeScan(barcodeBuffer);
+                barcodeBuffer = '';
+            }
+        }, 100);
+    });
+    
+    input.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            handleBarcodeScan(e.target.value);
+            e.target.value = '';
+        }
+    });
+}
+
+function handleBarcodeScan(barcode) {
+    if (!barcode || barcode.trim().length === 0) return;
+    
+    const cleanBarcode = barcode.trim();
+    const products = loadData(CONFIG.STORAGE_KEYS.PRODUCTS);
+    const product = products.find(p => 
+        p.sku && p.sku.toLowerCase() === cleanBarcode.toLowerCase()
+    );
+    
+    if (product) {
+        if (product.qty > 0) {
+            addToCart(product.id);
+            
+            Swal.fire({
+                icon: 'success',
+                title: 'Product Added!',
+                text: `${sanitizeInput(product.name)} added to cart`,
+                toast: true,
+                position: 'top-end',
+                timer: 2000,
+                showConfirmButton: false
+            });
+            
+            document.getElementById('barcodeInput').value = '';
+        } else {
+            Swal.fire({
+                icon: 'warning',
+                title: 'Out of Stock',
+                text: `${sanitizeInput(product.name)} is not available`,
+                toast: true,
+                position: 'top-end',
+                timer: 2500
+            });
+            document.getElementById('barcodeInput').value = '';
+        }
+    } else {
+        Swal.fire({
+            icon: 'error',
+            title: 'Product Not Found',
+            text: `No product with SKU: ${cleanBarcode}`,
+            toast: true,
+            position: 'top-end',
+            timer: 3000
+        });
+        document.getElementById('barcodeInput').value = '';
+    }
+}
+
+function clearBarcodeInput() {
+    const input = document.getElementById('barcodeInput');
+    if (input) {
+        input.value = '';
+        input.focus();
+    }
+}
+
+function printBarcode(productId) {
+    const products = loadData(CONFIG.STORAGE_KEYS.PRODUCTS);
+    const product = products.find(p => p.id === productId);
+    
+    if (!product || !product.sku) {
+        Swal.fire({icon: 'warning', title: 'No SKU set for this product'});
+        return;
+    }
+    
+    const printWindow = window.open('', '_blank');
+    const barcodeText = product.sku;
+    
+    printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Barcode - ${sanitizeInput(product.name)}</title>
+            <style>
+                body { font-family: monospace; padding: 20px; text-align: center; }
+                .barcode-container { margin: 20px; padding: 20px; border: 2px solid #000; }
+                .barcode { font-size: 24px; letter-spacing: 4px; font-weight: bold; }
+                .product-name { font-size: 14px; margin-top: 10px; }
+                .price { font-size: 16px; font-weight: bold; color: #28a745; }
+                @media print { button { display: none; } }
+            </style>
+        </head>
+        <body>
+            <div class="barcode-container">
+                <div class="product-name">${sanitizeInput(product.name)}</div>
+                <div class="price">${formatMoney(product.price)}</div>
+                <div class="barcode">${barcodeText}</div>
+                <div style="font-size: 12px;">SKU: ${barcodeText}</div>
+                <button onclick="window.print()" style="margin-top: 20px;">Print</button>
+            </div>
+        </body>
+        </html>
+    `);
+    
+    printWindow.document.close();
 }
 
 // ==================== PRODUCTS (ADMIN ONLY) ====================
@@ -940,11 +1280,12 @@ function renderProducts() {
     document.getElementById('productSubmitBtn').textContent = 'Add';
     document.getElementById('productForm').reset();
     document.getElementById('pLow').value = '10';
+    document.getElementById('pDiscType').value = '';
+    document.getElementById('pDiscValue').value = '';
     document.getElementById('filterProd').value = '';
     renderProductsTable();
 }
 
-// ✅ TABLEKA PRODUCTSKA - Edit (Blue) iyo Delete (Red) button-ka
 function renderProductsTable(filter = '') {
     const products = loadData(CONFIG.STORAGE_KEYS.PRODUCTS);
     const filtered = filter ? products.filter(p => p.name.toLowerCase().includes(filter.toLowerCase())) : products;
@@ -955,39 +1296,29 @@ function renderProductsTable(filter = '') {
     const frag = document.createDocumentFragment();
     filtered.forEach(p => {
         const tr = document.createElement('tr');
+        const discDisplay = p.discountType ? (p.discountType === 'percent' ? p.discountValue + '%' : formatMoney(p.discountValue)) : '';
         tr.innerHTML = `
             <td>${sanitizeInput(p.name)}</td>
             <td>${sanitizeInput(p.sku || 'N/A')}</td>
             <td>${formatMoney(p.price)}</td>
             <td>${formatMoney(p.cost)}</td>
+            <td>${discDisplay}</td>
             <td>${p.qty}</td>
             <td>${p.low}</td>
             <td class="role-admin">
                 <div class="action-buttons">
-                    <button class="btn-blue btn-sm edit-btn" data-id="${p.id}">Edit</button>
-                    <button class="btn-danger btn-sm delete-btn" data-id="${p.id}">Delete</button>
+                    <button class="btn-blue btn-sm" onclick="editProduct('${p.id}')">Edit</button>
+                    <button class="btn-danger btn-sm" onclick="deleteProduct('${p.id}')">Delete</button>
+                    <button class="btn-secondary btn-sm" onclick="printBarcode('${p.id}')">Barcode</button>
                 </div>
             </td>
         `;
         frag.appendChild(tr);
     });
     tbody.appendChild(frag);
-
-    // make sure admin-only cells are visible/hidden correctly on every render
-    // adjust each row cell and also the header column based on current role
-    tbody.querySelectorAll('.role-admin').forEach(el => {
-        el.style.display = (currentUser && currentUser.role === CONFIG.ROLES.ADMIN) ? 'table-cell' : 'none';
-    });
-    document.querySelectorAll('#productsTable th.role-admin').forEach(el => {
-        el.style.display = (currentUser && currentUser.role === CONFIG.ROLES.ADMIN) ? 'table-cell' : 'none';
-    });
-
-    // attach event listeners for the newly created buttons
-    tbody.querySelectorAll('.edit-btn').forEach(btn => {
-        btn.addEventListener('click', () => editProduct(btn.dataset.id));
-    });
-    tbody.querySelectorAll('.delete-btn').forEach(btn => {
-        btn.addEventListener('click', () => deleteProduct(btn.dataset.id));
+    // ensure visibility of admin-only buttons if the user is admin
+    document.querySelectorAll('.role-admin').forEach(el => {
+        el.style.display = currentUser.role === CONFIG.ROLES.ADMIN ? 'block' : 'none';
     });
 }
 
@@ -1006,7 +1337,9 @@ function handleProductSubmit(e) {
         cost: parseFloat(document.getElementById('pCost').value),
         sku: sanitizeInput(document.getElementById('pSKU').value, 50),
         qty: parseInt(document.getElementById('pQty').value),
-        low: parseInt(document.getElementById('pLow').value)
+        low: parseInt(document.getElementById('pLow').value),
+        discountType: document.getElementById('pDiscType').value || null,
+        discountValue: parseFloat(document.getElementById('pDiscValue').value) || 0
     };
     
     if (!product.name || !product.price || !product.cost || product.qty < 0) {
@@ -1029,7 +1362,6 @@ function handleProductSubmit(e) {
     }
 }
 
-// ✅ FUNCTIONKA EDIT - Product
 function editProduct(id) {
     if (currentUser.role !== CONFIG.ROLES.ADMIN) return;
     
@@ -1044,12 +1376,13 @@ function editProduct(id) {
     document.getElementById('pSKU').value = product.sku || '';
     document.getElementById('pQty').value = product.qty;
     document.getElementById('pLow').value = product.low;
+    document.getElementById('pDiscType').value = product.discountType || '';
+    document.getElementById('pDiscValue').value = product.discountValue || 0;
     document.getElementById('productSubmitBtn').textContent = 'Save';
     
     document.getElementById('productForm').scrollIntoView({ behavior: 'smooth' });
 }
 
-// ✅ FUNCTIONKA DELETE - Product
 function deleteProduct(id) {
     if (currentUser.role !== CONFIG.ROLES.ADMIN) return;
     
@@ -1102,7 +1435,8 @@ function renderReports() {
         if (t) { to = new Date(t); to.setHours(23,59,59,999); }
     }
     
-    const sales = loadData(CONFIG.STORAGE_KEYS.SALES).filter(s => {
+    // filter sales by date range, user and non-returned
+    const filtered = loadData(CONFIG.STORAGE_KEYS.SALES).filter(s => {
         if (s.returned) return false;
         if (currentUser.role === CONFIG.ROLES.CASHIER && s.user !== currentUser.username) return false;
         const d = new Date(s.date);
@@ -1111,7 +1445,40 @@ function renderReports() {
         return true;
     });
     
+    // remove duplicates (same invoice ID) in case of corrupted data
+    const salesMap = new Map();
+    filtered.forEach(s => {
+        if (!salesMap.has(s.id)) {
+            salesMap.set(s.id, s);
+        }
+        // duplicates are ignored silently; could log/alert if needed
+    });
+    const sales = Array.from(salesMap.values());
+    
+    // total revenue for range
     document.getElementById('repTotal').textContent = formatMoney(sales.reduce((a,b) => a + b.total, 0));
+    // actual profit per invoice, not estimated margin
+    const totalProfit = sales.reduce((sum, sale) => {
+        let saleProfit = sale.lines.reduce((lp, line) => {
+            const revenue = (line.price * line.qty) - (line.discountAmount || 0);
+            const cost = line.cost * line.qty;
+            return lp + (revenue - cost);
+        }, 0);
+        if (sale.discount && sale.discount.amount) {
+            saleProfit -= sale.discount.amount;
+        }
+        return sum + saleProfit;
+    }, 0);
+    document.getElementById('repProfit').textContent = formatMoney(totalProfit);
+
+    // total discounts given in range (line + bill level)
+    const totalDiscount = sales.reduce((sum, sale) => {
+        let disc = 0;
+        disc += sale.lines.reduce((ls, line) => ls + (line.discountAmount || 0), 0);
+        if (sale.discount && sale.discount.amount) disc += sale.discount.amount;
+        return sum + disc;
+    }, 0);
+    document.getElementById('repDiscount').textContent = formatMoney(totalDiscount);
     
     const items = {};
     sales.forEach(s => s.lines.forEach(l => items[l.name] = (items[l.name] || 0) + l.qty));
@@ -1466,7 +1833,9 @@ async function initDefaultData() {
                 cost: 1.80,
                 sku: 'COCA-1.5L-002',
                 qty: 100,
-                low: 20
+                low: 20,
+                discountType: 'percent',
+                discountValue: 5
             },
             {
                 id: generateId('PROD'),
@@ -1495,7 +1864,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         Swal.fire({
             title: 'Logout?',
             icon: 'question',
-            showCancelButton: true
+             showCancelButton: true
         }).then(result => {
             if (result.isConfirmed) {
                 localStorage.removeItem(CONFIG.STORAGE_KEYS.SESSION);
@@ -1506,12 +1875,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     });
     
+    // Export (Admin only)
     document.getElementById('exportBtn')?.addEventListener('click', () => {
         const data = {
             users: loadData(CONFIG.STORAGE_KEYS.USERS),
             sales: loadData(CONFIG.STORAGE_KEYS.SALES),
             products: loadData(CONFIG.STORAGE_KEYS.PRODUCTS),
-            customers: loadData(CONFIG.STORAGE_KEYS.PATIENTS),
+            patients: loadData(CONFIG.STORAGE_KEYS.PATIENTS),
             returns: loadData(CONFIG.STORAGE_KEYS.RETURNS),
             payments: loadData(CONFIG.STORAGE_KEYS.PAYMENTS)
         };
@@ -1519,29 +1889,46 @@ document.addEventListener('DOMContentLoaded', async () => {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `kaamil_supermarket_backup_${Date.now()}.json`;
+        a.download = `pharmacy_backup_${Date.now()}.json`;
         a.click();
         URL.revokeObjectURL(url);
     });
     
-    document.getElementById('payType').addEventListener('change', toggleCreditFields);
-    document.getElementById('btnSaveSale').addEventListener('click', processSale);
-    document.getElementById('searchProduct').addEventListener('input', debounce(filterProducts, 300));
+    // POS events
+    const payTypeEl = document.getElementById('payType');
+    if (payTypeEl) payTypeEl.addEventListener('change', toggleCreditFields);
+    const btnSaveSaleEl = document.getElementById('btnSaveSale');
+    if (btnSaveSaleEl) btnSaveSaleEl.addEventListener('click', processSale);
+    const searchEl = document.getElementById('searchProduct');
+    if (searchEl) searchEl.addEventListener('input', debounce(filterProducts, 300));
     
+    // Products events (will be hidden for cashier)
     document.getElementById('productForm')?.addEventListener('submit', handleProductSubmit);
     document.getElementById('filterProd')?.addEventListener('input', debounce(() => {
         const search = document.getElementById('filterProd').value;
         renderProductsTable(search);
     }, 300));
     
+    // Reports events
     document.getElementById('reportRange').addEventListener('change', handleReportRangeChange);
-    document.getElementById('rFrom')?.addEventListener('change', renderReports);
-    document.getElementById('rTo')?.addEventListener('change', renderReports);
+    document.getElementById('rFrom').addEventListener('change', renderReports);
+    document.getElementById('rTo').addEventListener('change', renderReports);
     
-    document.getElementById('processReturnBtn')?.addEventListener('click', processReturn);
+    // Returns event (hidden for cashier)
+    const returnBtnEl = document.getElementById('processReturnBtn');
+    if (returnBtnEl) returnBtnEl.addEventListener('click', processReturn);
+    const returnInputEl = document.getElementById('returnOrderId');
+    if (returnInputEl) returnInputEl.addEventListener('keypress', e => {
+        if (e.key === 'Enter') processReturn();
+    });
+    
+    // Users event (hidden for cashier)
     document.getElementById('userForm')?.addEventListener('submit', handleUserSubmit);
+    
+    // Credit event
     document.getElementById('creditPaymentForm').addEventListener('submit', handleCreditPayment);
     
+    // Initialize
     await initDefaultData();
     await checkSession();
 });
@@ -1558,7 +1945,7 @@ function debounce(func, wait) {
     };
 }
 
-// Global functions for onclick
+// Global function references for onclick handlers
 window.addToCart = addToCart;
 window.removeFromCart = removeFromCart;
 window.editProduct = editProduct;
